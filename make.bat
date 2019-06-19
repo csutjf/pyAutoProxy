@@ -1,0 +1,1 @@
+pyinstaller pyAutoProxy.py -i app.ico --onefile
