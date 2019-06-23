@@ -51,6 +51,17 @@ def write(func):
 
     return _write
 
+def append(func):
+    filename = func()
+
+    def _append(content):
+        current_dir = os.path.dirname(__file__)
+        path = os.path.join(current_dir, filename)
+        with open(path, mode='a', encoding='utf-8') as f:
+            f.write(content)
+
+    return _append
+
 
 def resource(func):
     path = func()
@@ -74,6 +85,11 @@ def read_domains():
 
 @write
 def write_domains(*args, **kwargs):
+    return 'domains.txt'
+
+
+@append
+def append_domains(*args, **kwargs):
     return 'domains.txt'
 
 
@@ -233,7 +249,10 @@ def main():
 
     while True:
         try:
-            input('Press CTRL+C to quit\n')
+            print('Press CTRL+C to quit')
+            new_domain = input('Add one new_domain by enter.\n')
+            new_domain = str.strip(new_domain)
+            append_domains('\n' + new_domain)
         except KeyboardInterrupt:
             privoxy.terminate()
             break
