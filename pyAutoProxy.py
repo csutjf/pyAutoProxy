@@ -250,7 +250,7 @@ def main():
     while True:
         try:
             print('Press CTRL+C to quit')
-            new_domain = input('Add one new_domain by enter.\n')
+            new_domain = input('Add a new domain:')
             new_domain = str.strip(new_domain)
             append_domains('\n' + new_domain)
         except KeyboardInterrupt:
