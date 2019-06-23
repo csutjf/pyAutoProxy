@@ -1,1 +1,2 @@
-pyinstaller pyAutoProxy.py -i app.ico --onefile
+REM pyinstaller pyAutoProxy.py -i app.ico --onefile
+pyinstaller pyAutoProxy.spec
