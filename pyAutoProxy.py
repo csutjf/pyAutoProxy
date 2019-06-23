@@ -1,11 +1,11 @@
 import argparse
-import itertools
 import operator
 import os
-import random
 import sys
+import random
 import threading
 import typing
+import subprocess
 import urllib.request
 import urllib.parse
 import urllib.error
@@ -27,6 +27,7 @@ def fetch(func):
 
     return _fetch
 
+
 def read(func):
     filename = func()
 
@@ -37,6 +38,7 @@ def read(func):
             return f.read()
 
     return _read
+
 
 def write(func):
     filename = func()
@@ -49,73 +51,54 @@ def write(func):
 
     return _write
 
+
+def resource(func):
+    path = func()
+
+    def _resource():
+        base_path = getattr(sys, '_MEIPASS', os.path.dirname(
+            os.path.abspath(__file__)))
+        return os.path.join(base_path, path)
+    return _resource
+
+
 @fetch
 def fetch_domains():
     return 'https://github.com/zungmou/pyAutoProxy/raw/master/domains.txt'
+
 
 @read
 def read_domains():
     return 'domains.txt'
 
+
 @write
 def write_domains(*args, **kwargs):
     return 'domains.txt'
+
 
 @read
 def read_proxies():
     return 'proxies.txt'
 
+
+@resource
+def get_privoxy_path():
+    return 'privoxy.exe'
+
+
+@read
+def read_privoxy_config():
+    return 'config.txt'
+
+
 @write
-def write_proxies(*args, **kwargs):
-    return 'proxies.txt'
-
-def read_else_write(filename, default, only_write=False):
-    current_dir = os.path.dirname(__file__)
-    path = os.path.join(current_dir, filename)
-
-    try:
-        if not only_write:
-            with open(path, mode='r', encoding='utf-8') as f:
-                return f.read()
-        else:
-            raise FileNotFoundError
-    except FileNotFoundError:
-        with open(path, mode='w', encoding='utf-8') as f:
-            default = default() if callable(default) else default
-            f.write(default)
-            return default
+def write_privoxy_config(*args, **kwargs):
+    return 'config.txt'
 
 
 class ServerHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        randint = random.randrange(100000, 999999)
-        filename = f'{randint}.pac'
-        self.send_response(200)
-        self.send_header('Content-type', 'application/x-ns-proxy-autoconfig')
-        self.send_header('Content-Disposition',
-                         f'inline; filename="{filename}"')
-        self.end_headers()
-        self.wfile.write(self.merage().encode())
-
-    def log_message(self, format, *args):
-        return
-
-    def merage(self):
-        def read_else_fetch(readfunc, fetchfunc, writefunc, fetch_fail_default):
-            try:
-                content = readfunc()
-            except FileNotFoundError:
-                try:
-                    content = fetchfunc()
-                except urllib.error.HTTPError:
-                    content = fetch_fail_default
-                finally:
-                    writefunc(content)
-            finally:
-                return content
-
-        template = \
-r"""
+    __script = r"""
 var FindProxyForURL = function (init, profiles) {
     return function (url, host) {
         "use strict";
@@ -139,61 +122,121 @@ var FindProxyForURL = function (init, profiles) {
     }
 });
 """
-        domains = read_else_fetch(read_domains, fetch_domains, write_domains, '')
-        domains = str.split(domains, '\n')
-        domains = map(str.strip, domains)
-        domains = filter(operator.truth, domains)
-        domains = filter(lambda x: not str.startswith(x, '#'), domains)
-        domains = list(sorted(set(domains)))
-        write_domains('\n'.join(domains))
+
+    def log_message(self, format, *args):
+        return
+
+    def get_domains(self):
+        try:
+            domains = read_domains()
+        except FileNotFoundError:
+            try:
+                domains = fetch_domains()
+            except urllib.error.HTTPError:
+                domains = ''
+            finally:
+                write_domains(domains)
+        finally:
+            domains = str.split(domains, '\n')
+            domains = map(str.strip, domains)
+            domains = filter(operator.truth, domains)
+            domains = filter(lambda x: not str.startswith(x, '#'), domains)
+            domains = list(sorted(set(domains)))
+            write_domains('\n'.join(domains))
+            return domains
+
+    def get_proxies(self):
+        proxies = read_proxies()
+        proxies = str.split(proxies, ';')
+        proxies = map(str.strip, proxies)
+        proxies = filter(operator.truth, proxies)
+        proxies = tuple(proxies)
+        return proxies
+
+    def get_rules(self):
+        domains = self.get_domains()
+        domains = map(lambda x: str.replace(x, '.', r'\.'), domains)
+        domains = map(lambda x: f'if (/(?:^|\\.){x}$/.test(host)) return "+PACHost";', domains)
+        rules = '\n'.join(domains)
+        return rules
+
+    def do_GET(self):
+        response_status = 200
+        response_data = None
+        content_type = 'application/x-ns-proxy-autoconfig'
+        content_disposition = f'attachment; filename="{random.randrange(100000, 999999)}.pac"'
 
         try:
-            proxies = read_proxies()
-        except FileNotFoundError:
-            while True:
-                flash()
-                proxies = input('Enter a Proxy, e.g.(PROXY 127.0.0.1:8118; SOCKS5 127.0.0.1:1080):')
-                proxies = str.strip(proxies)
-                if proxies:
-                    write_proxies(proxies)
-                    break
+            try:
+                proxies = self.get_proxies()
+            except FileNotFoundError:
+                message = 'The proxy needs to be defined in the proxies.txt file, e.g.: PROXY 127.0.0.1:8118; SOCKS5 127.0.0.1:1080'
+                response_status = 500
+                content_type = 'text/plain'
+                content_disposition = 'inline'
+                response_data = message.encode()
+                return
+
+            rules = self.get_rules()
+            response_data = self.__script.replace('/*{PROXY-RULES}*/', rules)
+            response_data = response_data.replace('/*{PROXY-DEFINES}*/', ';'.join(proxies))
+            response_data = response_data.encode()
         finally:
-            proxies = str.split(proxies, ';')
-            proxies = map(str.strip, proxies)
-            proxies = filter(operator.truth, proxies)
-            proxies = list(proxies)
+            self.send_response(response_status)
+            self.send_header('Content-type', content_type)
+            self.send_header('Content-Disposition', content_disposition)
+            self.end_headers()
+            self.wfile.write(response_data)
 
-        rules = map(lambda x: str.replace(x, '.', r'\.'), domains)
-        rules = map(
-            lambda x: f'if (/(?:^|\\.){x}$/.test(host)) return "+PACHost";', rules)
-        rules = '\n'.join(rules)
-        template = template.replace('/*{PROXY-RULES}*/', rules)
-        template = template.replace('/*{PROXY-DEFINES}*/', ';'.join(proxies))
-        return template
 
-def flash():
+def parseargs():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--address', default='127.0.0.1')
+    parser.add_argument('--port', type=int, default='8000')
+    parser.add_argument('--privoxy-address', default='127.0.0.1')
+    parser.add_argument('--privoxy-port', type=int, default='8118')
+    parser.add_argument('--socks5-proxy-address', default='127.0.0.1')
+    parser.add_argument('--socks5-proxy-port', type=int, default='10808')
+    return parser.parse_args()
+
+
+def start_privoxy(listen: typing.Tuple[str, int], forward: typing.Tuple[str, int]):
     try:
-        import ctypes
-        ctypes.windll.user32.FlashWindow(ctypes.windll.kernel32.GetConsoleWindow(), True)
-    except ImportError:
-        pass
+        read_privoxy_config()
+    except FileNotFoundError:
+        write_privoxy_config('\n'.join((
+            'log-messages 1',
+            'debug 1',
+            f'listen-address {listen[0]}:{listen[1]}',
+            f'forward-socks5 / {forward[0]}:{forward[1]} .'
+        )))
+    return subprocess.Popen([], executable=get_privoxy_path())
+
 
 def run(address: str, port: int):
-    print('PAC host at http://127.0.0.1:8000/')
-    server_address = ('127.0.0.1', 8000)
+    server_address = (address, port)
     httpd = HTTPServer(server_address, ServerHandler)
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
-    thread.setDaemon(True)
     thread.start()
-    thread.join()
 
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--address', default='127.0.0.1')
-    parser.add_argument('--port', type=int, default='8080')
-    args = parser.parse_args()
+    args = parseargs()
+
+    listen = args.privoxy_address, args.privoxy_port
+    forward = args.socks5_proxy_address, args.socks5_proxy_port
+    privoxy = start_privoxy(listen=listen, forward=forward)
+    del listen, forward
+
     run(args.address, args.port)
+    print(f'PAC host at http://{args.address}:{args.port}/')
+
+    while True:
+        try:
+            input('Press CTRL+C to quit\n')
+        except KeyboardInterrupt:
+            privoxy.terminate()
+            break
 
 
 if __name__ == "__main__":
